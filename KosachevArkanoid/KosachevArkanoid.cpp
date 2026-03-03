@@ -74,20 +74,20 @@ static inline cv::Mat makeGrid2x2(const cv::Mat& upL, const cv::Mat& upR, const 
 }
 
 
-void initObjectControls() // функция для создания трекбаров
+void initRobotControls() // функция для создания трекбаров
 {
-    cv::namedWindow("Controls_Object", cv::WINDOW_NORMAL); // создаем окно
-    cv::resizeWindow("Controls_Object", 350, 260); // устанавливаем размер окна
+    cv::namedWindow("Controls_Robot", cv::WINDOW_NORMAL);
+    cv::resizeWindow("Controls_Robot", 350, 260);
 
-    cv::createTrackbar("H min", "Controls_Object", &H.min, 179); // создаем трекбары
-    cv::createTrackbar("H max", "Controls_Object", &H.max, 179);
-    cv::createTrackbar("S min", "Controls_Object", &Smin, 255);
-    cv::createTrackbar("V min", "Controls_Object", &Vmin, 255);
+    cv::createTrackbar("H min", "Controls_Robot", &H.min, 179); // создаем трекбары
+    cv::createTrackbar("H max", "Controls_Robot", &H.max, 179);
+    cv::createTrackbar("S min", "Controls_Robot", &Smin, 255);
+    cv::createTrackbar("V min", "Controls_Robot", &Vmin, 255);
 
-    cv::createTrackbar("A min", "Controls_Object", &A.min, 255);
-    cv::createTrackbar("A max", "Controls_Object", &A.max, 255);
-    cv::createTrackbar("B min", "Controls_Object", &B.min, 255);
-    cv::createTrackbar("B max", "Controls_Object", &B.max, 255);
+    cv::createTrackbar("A min", "Controls_Robot", &A.min, 255);
+    cv::createTrackbar("A max", "Controls_Robot", &A.max, 255);
+    cv::createTrackbar("B min", "Controls_Robot", &B.min, 255);
+    cv::createTrackbar("B max", "Controls_Robot", &B.max, 255);
 }
 
 bool initUDP() // инициализация UDP-соединения
@@ -149,6 +149,16 @@ void sendData(const void* data, size_t size)
     );
 }
 
+enum class Mode // перечисление режимов работы программы
+{
+    ARKANOID = 1,
+    ROBOT_CAL = 2
+};
+
+Mode mode = Mode::ARKANOID;
+Mode prevMode = Mode::ARKANOID;
+bool robotControlsOpen = false; // открыто ли окно калибровки робота
+
 int main()
 {
     cv::Mat frameBGR, frameHSV, frameLAB, frameLabHSV, homography, frameTop; // объект класса Mat для хранения текущего кадра изображения
@@ -159,7 +169,6 @@ int main()
     cv::setMouseCallback("View", onMouse);
 
     if (!initUDP()) return -2; // инициализируем UDP
-    initObjectControls();
     while (true) // бесконечно
     {
         video >> frameBGR; // получаем кадр из видеопотока
@@ -187,7 +196,30 @@ int main()
             if (cv::waitKey(1) == 27) break;
             continue;
         }
+
+        int k = cv::waitKey(1); // читаем нажатую клавишу (если есть)
+        if (k == 27) break; // ESC — выход из программы
+        if (k == '1') mode = Mode::ARKANOID;
+        if (k == '2') mode = Mode::ROBOT_CAL;
+
+        if (mode != prevMode)
+        {
+            if (robotControlsOpen) // если было открыто окно калибровки робота — закрываем его
+            {
+                cv::destroyWindow("Controls_Robot");
+                robotControlsOpen = false;
+            }
+            if (mode == Mode::ROBOT_CAL) // если режим - калибровка робота
+            {
+                initRobotControls(); // создаём окно и трекбары для калибровки робота
+                robotControlsOpen = true;// отмечаем, что окно калибровки робота открыто
+            }
+            prevMode = mode; // запоминаем текущий режим как предыдущий
+        }
+
         cv::warpPerspective(frameBGR, frameTop, homography, cv::Size(FIELD_W, FIELD_H));
+
+
 
         cv::cvtColor(frameTop, frameHSV, cv::COLOR_BGR2HSV); // преобразуем полученный кадр в HSV
         cv::GaussianBlur(frameHSV,
@@ -254,17 +286,31 @@ int main()
 
             sendData(&pack, sizeof(pack)); // отправляем число по UDP при помощи созданной функции
         }
-        cv::Mat blBGR, trBGR, brBGR; // создаем новые маски
-        toBGR(frameHSV, blBGR); // преобразуем маски в RGB
-        toBGR(frameLAB, trBGR);
-        toBGR(frameLabHSV, brBGR);
+        if (mode == Mode::ARKANOID) // если режим Арканоид
+        {
+            cv::putText(frameTop, "Mode: 1 Arkanoid   2 RobotCal",
+                cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2); // рисуем текст с режимами
+            cv::imshow("View", frameTop); // выводим
+        }
+        else if (mode == Mode::ROBOT_CAL)
+        {
+            cv::Mat tl = frameTop.clone();
+            putText(tl, "Robot Calibration (2)", cv::Point(15, 28),
+                cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2); // выводим название режима
+            putText(tl, "Keys: 1/2 switch modes", cv::Point(15, 55),
+                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2); // выводим текст с инструкцией по переключению вкладок
+            cv::Mat blBGR, trBGR, brBGR; // создаем новые маски
+            toBGR(frameHSV, blBGR); // преобразуем маски в RGB
+            toBGR(frameLAB, trBGR);
+            toBGR(frameLabHSV, brBGR);
 
-        putText(blBGR, "HSV robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2); // Вставляем названия окон
-        putText(brBGR, "Final (HSV|LAB) robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
-        putText(trBGR, "LAB robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
-        
-        cv::Mat grid = makeGrid2x2(frameTop, blBGR, trBGR, brBGR, FIELD_W, FIELD_H); // создаем 4 окна
-        imshow("View", grid); // отображаем кадр в окне с именем LabHSVVideo
+            putText(blBGR, "HSV robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2); // Вставляем названия окон
+            putText(brBGR, "Final (HSV|LAB) robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+            putText(trBGR, "LAB robot", cv::Point(15, 28), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+
+            cv::Mat grid = makeGrid2x2(frameTop, blBGR, trBGR, brBGR, FIELD_W, FIELD_H); // создаем 4 окна
+            imshow("View", grid); // отображаем кадр в окне с именем LabHSVVideo
+        }
         if (cv::waitKey(1) == 27) break; // ожидание 1 мс и проверка нажатия клавиши ESC
     }
     shutdownUDP(); // отключаем UDP
