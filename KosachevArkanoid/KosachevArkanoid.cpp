@@ -240,6 +240,10 @@ int main()
         frameLAB = maskA | maskB; // объединяем результат в единую маску и записываем его
 
         frameLabHSV = frameHSV & frameLAB; // объединяем маски HSV и Lab в единый кадр
+        cv::morphologyEx(frameLabHSV, frameLabHSV, cv::MORPH_OPEN, cv::Mat(), cv::Point(-1, -1), 2); // чистим раз
+        cv::morphologyEx(frameLabHSV, frameLabHSV, cv::MORPH_CLOSE, cv::Mat(), cv::Point(-1, -1), 8); // чистим два
+        cv::morphologyEx(frameLAB, frameLAB, cv::MORPH_OPEN, cv::Mat(), cv::Point(-1, -1), 2); // чистим раз
+        cv::morphologyEx(frameLAB, frameLAB, cv::MORPH_CLOSE, cv::Mat(), cv::Point(-1, -1), 8); // чистим два
 
         std::vector<std::vector<cv::Point>> contour; // создаем вектор векторов координат для контуров объекта. Вектор векторов - это двухмерный массив.
         cv::findContours( //Ищем контуры объекта
