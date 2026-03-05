@@ -4,6 +4,8 @@
 #include <ws2tcpip.h> // удобные функции для IP-адресов и портов
 #pragma comment(lib, "ws2_32.lib") // библиотека линковки WinSock (чтобы всё собралось).
 
+ULONGLONG lastBallSeenTime = 0;
+
 // Глобальные переменные сокета и адреса получателя
 SOCKET senderSocket = INVALID_SOCKET;  // сокет для отправки
 sockaddr_in receiverAddr{};            // структура с IP и портом получателя
@@ -30,6 +32,10 @@ struct Packet
     uint16_t x;  // координата X
     uint16_t y;  // координата Y
 };
+
+// ================= ИСТОРИЯ МЯЧА =================
+std::vector<cv::Point2f> ballHistory;
+const int BALL_HISTORY_LEN = 10;
 
 // КАЛИБРОВКА ПОЛЯ
 std::vector<cv::Point2f> fieldCorners;
@@ -167,6 +173,22 @@ enum class Mode // перечисление режимов работы прог
     BALL_CAL = 3
 };
 
+void drawDashedLine(cv::Mat& img, cv::Point2f p1, cv::Point2f p2,
+    cv::Scalar color, int thickness, int dashLen = 10) // рисует пунктирную линию (предсказанную траекторию мяча)
+{
+    float length = (float)norm(p1 - p2); // расчёт длины
+    if (length < 1) return;
+
+    cv::Point2f dir = (p2 - p1) / length; // расчёт направления
+
+    for (float i = 0; i < length; i += dashLen * 2) // рисуем линию кусками: штрих — пропуск — штрих — пропуск
+    {
+        cv::Point2f s = p1 + dir * i;
+        cv::Point2f e = p1 + dir * min(i + dashLen, length);
+        line(img, s, e, color, thickness);
+    }
+}
+
 Mode mode = Mode::ARKANOID;
 Mode prevMode = Mode::ARKANOID;
 bool robotControlsOpen = false; // открыто ли окно калибровки робота
@@ -246,6 +268,7 @@ int main()
         cv::warpPerspective(frameBGR, frameTop, homography, cv::Size(FIELD_W, FIELD_H));
 
         //////// РОБОТ
+        bool robotDetected = false;
         cv::cvtColor(frameTop, frameHSV, cv::COLOR_BGR2HSV); // преобразуем полученный кадр в HSV
         cv::GaussianBlur(frameHSV,
             frameHSV,
@@ -292,31 +315,26 @@ int main()
 
         if (maxIndex != -1 && maxArea > 200) // если объект обнаружен и больше 200, то ищем его центр
         {
-            cv::Point2f objectCenter; // создаем переменную для записи координат
+            cv::Point2f robotCenter; // создаем переменную для записи координат
             Packet pack; // создаем пакет для формирования данных для отправки
-            float objectRadius = 0; // создаем переменную для радиуса круга
-            cv::minEnclosingCircle(contour[maxIndex], objectCenter, objectRadius); // рассчитываем минимальную описанную окружность для найденного контура объекта
-            cv::circle(frameTop, objectCenter, (int)objectRadius, cv::Scalar(255, 0, 0), 2); // рисуем саму окружность на изначальном изображении
-            cv::circle(frameTop, objectCenter, 3, cv::Scalar(0, 255, 0), -1); // рисуем центральную точку на изначальном изображении
-            cv::putText(frameTop, // добавляем надпись. что это робот
-                "Robot",
-                objectCenter + cv::Point2f(-objectRadius, objectRadius),
-                cv::FONT_HERSHEY_COMPLEX,
-                0.6,
-                cv::Scalar(0, 0, 255));
-            int xi = (int)std::lround(objectCenter.x); // округляем и записываем координату центра по Х 
-            int yi = (int)std::lround(objectCenter.y); // округляем и записываем координату центра по У 
-
-            xi = std::clamp(xi, 0, 65535); // ограничиваем диапазон числа, чтобы он не мог быть больше 2-х байтов
-            yi = std::clamp(yi, 0, 65535);
-
-            pack.x = htons((uint16_t)xi); // упаковываем число. преобразовав его в 2 байта
-            pack.y = htons((uint16_t)yi); // упаковываем число. преобразовав его в 2 байта
-
-            sendData(&pack, sizeof(pack)); // отправляем число по UDP при помощи созданной функции
+            float robotRadius = 0; // создаем переменную для радиуса круга
+            cv::minEnclosingCircle(contour[maxIndex], robotCenter, robotRadius); // рассчитываем минимальную описанную окружность для найденного контура объекта
+            if (robotRadius > 5) // если радиус окружности больше 5
+            {
+                robotDetected = true; // значит робот найден
+                cv::circle(frameTop, robotCenter, (int)robotRadius, cv::Scalar(255, 0, 0), 2); // рисуем саму окружность на изначальном изображении
+                cv::circle(frameTop, robotCenter, 3, cv::Scalar(0, 255, 0), -1); // рисуем центральную точку на изначальном изображении
+                cv::putText(frameTop, // добавляем надпись. что это робот
+                    "Robot",
+                    robotCenter + cv::Point2f(-robotRadius, robotRadius),
+                    cv::FONT_HERSHEY_COMPLEX,
+                    0.6,
+                    cv::Scalar(0, 0, 255));
+            }
         }
 
         //////// МЯЧ
+        bool ballDetected = false;
         cv::cvtColor(frameTop, frameHSVBall, cv::COLOR_BGR2HSV); // преобразуем полученный кадр в HSV
         cv::GaussianBlur(frameHSVBall,
             frameHSVBall,
@@ -326,7 +344,7 @@ int main()
             cv::Scalar(H1_Ball.min, S_Ball_min, V_Ball_min),
             cv::Scalar(H1_Ball.max, 255, 255),
             frameHSVBall1); // ищем только вхождения нужного цвета (преобразуем в бинарную маску) и переписываем в ту же переменную
-        
+
         cv::inRange(frameHSVBall,
             cv::Scalar(H2_Ball.min, S_Ball_min, V_Ball_min),
             cv::Scalar(H2_Ball.max, 255, 255),
@@ -369,12 +387,54 @@ int main()
 
         if (maxIndexBall != -1 && maxAreaBall > 200) // если объект обнаружен и больше 200, то ищем его центр
         {
-            cv::Point2f objectCenterBall; // создаем переменную для записи координат
-            float objectRadiusBall = 0; // создаем переменную для радиуса круга
-            cv::minEnclosingCircle(contourBall[maxIndexBall], objectCenterBall, objectRadiusBall); // рассчитываем минимальную описанную окружность для найденного контура объекта
-            cv::circle(frameTop, objectCenterBall, (int)objectRadiusBall, cv::Scalar(255, 0, 0), 2); // рисуем саму окружность на изначальном изображении
-            cv::circle(frameTop, objectCenterBall, 3, cv::Scalar(0, 255, 0), -1); // рисуем центральную точку на изначальном изображении
+            cv::Point2f ballCenter; // создаем переменную для записи координат
+            float ballRadius = 0; // создаем переменную для радиуса круга
+            cv::minEnclosingCircle(contourBall[maxIndexBall], ballCenter, ballRadius); // рассчитываем минимальную описанную окружность для найденного контура объекта
+
+            if (ballRadius > 5)
+            {
+                ballDetected = true;
+                cv::circle(frameTop, ballCenter, (int)ballRadius, cv::Scalar(255, 0, 0), 2); // рисуем саму окружность на изначальном изображении
+                cv::circle(frameTop, ballCenter, 3, cv::Scalar(0, 255, 0), -1); // рисуем центральную точку на изначальном изображении
+            }
+            if (ballDetected)
+            {
+                lastBallSeenTime = GetTickCount64();
+                ballHistory.push_back(ballCenter); // записываем в историю обнаружения мяча
+                if (ballHistory.size() > BALL_HISTORY_LEN) // если история переполнена
+                    ballHistory.erase(ballHistory.begin()); // чистим первое вхождение
+            }
         }
+
+        bool trajValid = false; // флаг, показывающий, удалось ли корректно рассчитать траекторию мяча
+        cv::Point2f hitPoint; // точка соприкосновения контуров
+        if (mode == Mode::ARKANOID && ballHistory.size() >= 5) // если режим работы Арканоид и записано больше 5 измерений координат мяча
+        {
+            cv::Point2f pointLast = ballHistory[ballHistory.size() - 5]; // записываем точку 5 измерений назад
+            cv::Point2f pointNow = ballHistory.back(); // записываем последнюю точку
+            
+            float deltaX = pointNow.x - pointLast.x; // считаем изменения по х
+            float deltaY = pointNow.y - pointLast.y; // считаем изменения по у
+            
+            if (fabs(deltaX) > 5.0f && deltaY > 1.0f) // если изменения по х больше 5 и по у больше 1, то
+            {
+                float kAngle = deltaY / deltaX; // находим коэффициент наклона прямой (угловой коэффициент траектории мяча)
+                float bLine = pointNow.y - kAngle * pointNow.x; // находим свободный член уравнения прямой y = a*x + b (х робота)
+                
+                float yRobot = (float)FIELD_H; // задаём линию, на которой стоит робот (низ поля по Y)
+                float xRobot = (yRobot - bLine) / kAngle; // находим X, в котором траектория мяча пересечёт линию робота
+
+                if (xRobot < 0) xRobot = -xRobot; // отражаем траекторию от левой стены
+                else if (xRobot > FIELD_W) xRobot = FIELD_W - xRobot; // отражаем траекторию от правой стены
+
+                hitPoint = cv::Point2f(xRobot, yRobot); // получаем точку, куда должен приехать робот для удара по мячу
+                trajValid = true; // поднимаем флаг обнаружения траектории
+                drawDashedLine(frameTop, pointNow, hitPoint, cv::Scalar(255, 255, 0), 2, 4); // рисуем линию
+            }
+
+        }
+        
+
 
         if (mode == Mode::ARKANOID) // если режим Арканоид
         {
@@ -420,6 +480,15 @@ int main()
             cv::Mat grid = makeGrid(tl, down_L_BGR, up_R_BGR, down_R_BGR, FIELD_W, FIELD_H); // создаем 4 окна
             imshow("View", grid); // отображаем кадр в окне с именем LabHSVVideo
         }
+
+
+
+
+
+
+
+
+
 
         if (cv::waitKey(1) == 27) break; // ожидание 1 мс и проверка нажатия клавиши ESC
     }
