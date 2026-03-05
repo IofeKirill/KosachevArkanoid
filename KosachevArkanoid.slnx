@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="KosachevArkanoid/KosachevArkanoid.vcxproj" />
+  <Project Path="KosachevArkanoid/KosachevArkanoid.vcxproj" Id="163fb823-56b3-4108-896b-94199db3ed7c" />
 </Solution>
